@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IDOR Bug Finder</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .search-box {
+            background: white;
+            padding: 30px;
+            rounded: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .results {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        .vulnerability {
+            background: #f8f9fa;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #e74c3c;
+        }
+        .vulnerability h3 {
+            color: #e74c3c;
+            margin-bottom: 10px;
+        }
+        .vulnerability p {
+            color: #333;
+            margin: 5px 0;
+        }
+        .vulnerability a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        .loading {
+            text-align: center;
+            color: white;
+            font-size: 18px;
+            margin: 20px 0;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 5px;
+            text-align: center;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        .stat-card h3 {
+            color: #667eea;
+            font-size: 2em;
+            margin-bottom: 5px;
+        }
+        .stat-card p {
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 IDOR Bug Finder</h1>
+        
+        <div class="search-box">
+            <input type="text" id="searchQuery" placeholder="Enter search query (e.g., 'IDOR vulnerability')">
+            <button id="searchBtn" onclick="startSearch()">Search GitHub Repositories</button>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">
+            🔎 Searching... Please wait
+        </div>
+        
+        <div id="stats" class="stats" style="display: none;">
+            <div class="stat-card">
+                <h3 id="reposCount">0</h3>
+                <p>Repositories Searched</p>
+            </div>
+            <div class="stat-card">
+                <h3 id="vulnCount">0</h3>
+                <p>Vulnerabilities Found</p>
+            </div>
+        </div>
+        
+        <div id="results" class="results" style="display: none;">
+            <h2 style="margin-bottom: 20px;">📋 Potential IDOR Vulnerabilities</h2>
+            <div id="vulnerabilitiesList"></div>
+        </div>
+    </div>
+
+    <script>
+        const GITHUB_TOKEN = ''; // Add your token here (optional)
+        const BASE_URL = 'https://api.github.com/search/repositories';
+        
+        const idorPatterns = [
+            'user_id\\s*=\\s*request\\.',
+            'account_id\\s*=\\s*request\\.',
+            'ObjectId\\(request\\.',
+            'id\\s*[:=]\\s*request\\.[\\w]+',
+            '/api/\\w+/\\d+',
+            'userId\\s*=\\s*params\\.',
+            'accountId\\s*=\\s*params\\.'
+        ];
+        
+        async function searchRepositories(query, perPage = 30) {
+            let repos = [];
+            let page = 1;
+            
+            while (true) {
+                const params = new URLSearchParams({
+                    q: query,
+                    per_page: perPage,
+                    page: page,
+                    sort: 'stars',
+                    order: 'desc'
+                });
+                
+                const headers = {
+                    'Accept': 'application/vnd.github.v3+json'
+                };
+                
+                if (GITHUB_TOKEN) {
+                    headers['Authorization'] = `token ${GITHUB_TOKEN}`;
+                }
+                
+                const response = await fetch(`${BASE_URL}?${params}`, { headers });
+                
+                if (!response.ok) {
+                    console.error('Error:', response.status);
+                    break;
+                }
+                
+                const data = await response.json();
+                const items = data.items || [];
+                
+                if (!items.length) break;
+                
+                repos.push(...items);
+                
+                if (items.length < perPage || page >= 10) break;
+                page++;
+            }
+            
+            return repos;
+        }
+        
+        async function analyzeRepository(repoName) {
+            const vulnerabilities = [];
+            const filesUrl = `https://api.github.com/repos/${repoName}/search/code`;
+            
+            const headers = {
+                'Accept': 'application/vnd.github.v3+json'
+            };
+            
+            if (GITHUB_TOKEN) {
+                headers['Authorization'] = `token ${GITHUB_TOKEN}`;
+            }
+            
+            const response = await fetch(filesUrl, {
+                headers,
+                params: { q: `repo:${repoName}`, per_page: 30 }
+            });
+            
+            if (!response.ok) return vulnerabilities;
+            
+            const data = await response.json();
+            const items = data.items || [];
+            
+            for (const item of items) {
+                const repoPath = item.repository?.full_name;
+                
+                try {
+                    const contentUrl = `https://api.github.com/repos/${repoPath}/contents/${item.path}`;
+                    const contentResponse = await fetch(contentUrl, { headers });
+                    
+                    if (contentResponse.ok) {
+                        const contentData = await contentResponse.json();
+                        const content = atob(contentData.content || '');
+                        
+                        for (const pattern of idorPatterns) {
+                            if (new RegExp(pattern, 'i').test(content)) {
+                                vulnerabilities.push({
+                                    file: item.path,
+                                    pattern: pattern,
+                                    repository: repoPath,
+                                    url: item.html_url
+                                });
+                                break;
+                            }
+                        }
+                    }
+                } catch (e) {
+                    continue;
+                }
+            }
+            
+            return vulnerabilities;
+        }
+        
+        async function startSearch() {
+            const query = document.getElementById('searchQuery').value;
+            
+            if (!query.trim()) {
+                alert('Please enter a search query');
+                return;
+            }
+            
+            document.getElementById('searchBtn').disabled = true;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('stats').style.display = 'none';
+            
+            const repos = await searchRepositories(query, 20);
+            const allVulnerabilities = [];
+            
+            for (const repo of repos.slice(0, 15)) {
+                const repoName = repo.full_name;
+                console.log(`Analyzing: ${repoName}`);
+                
+                const vulns = await analyzeRepository(repoName);
+                
+                if (vulns.length > 0) {
+                    allVulnerabilities.push(...vulns);
+                }
+            }
+            
+            // Update stats
+            document.getElementById('reposCount').textContent = repos.length;
+            document.getElementById('vulnCount').textContent = allVulnerabilities.length;
+            document.getElementById('stats').style.display = 'grid';
+            
+            // Display results
+            const list = document.getElementById('vulnerabilitiesList');
+            list.innerHTML = '';
+            
+            for (const vuln of allVulnerabilities) {
+                const div = document.createElement('div');
+                div.className = 'vulnerability';
+                div.innerHTML = `
+                    <h3>⚠️ ${vuln.file}</h3>
+                    <p><strong>Repository:</strong> ${vuln.repository}</p>
+                    <p><strong>Pattern:</strong> ${vuln.pattern}</p>
+                    <p><strong>Link:</strong> <a href="${vuln.url}" target="_blank">View on GitHub</a></p>
+                `;
+                list.appendChild(div);
+            }
+            
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('searchBtn').disabled = false;
+        }
+    </script>
+</body>
+</html>
